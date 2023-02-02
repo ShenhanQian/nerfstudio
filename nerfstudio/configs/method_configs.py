@@ -179,6 +179,26 @@ method_configs["instant-ngp-bounded"] = TrainerConfig(
     vis="viewer",
 )
 
+method_configs["treemlp"] = TrainerConfig(
+    method_name="treemlp",
+    steps_per_eval_batch=500,
+    steps_per_save=2000,
+    max_num_iterations=30000,
+    mixed_precision=True,
+    pipeline=DynamicBatchPipelineConfig(
+        datamanager=VanillaDataManagerConfig(dataparser=NerfstudioDataParserConfig(), train_num_rays_per_batch=8192),
+        model=InstantNGPModelConfig(eval_num_rays_per_chunk=8192),
+    ),
+    optimizers={
+        "fields": {
+            "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
+            "scheduler": SchedulerConfig(lr_final=1e-3, max_steps=30000),
+        }
+    },
+    viewer=ViewerConfig(num_rays_per_chunk=64000),
+    vis="viewer",
+)
+
 
 method_configs["mipnerf"] = TrainerConfig(
     method_name="mipnerf",
