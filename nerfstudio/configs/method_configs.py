@@ -51,6 +51,7 @@ from nerfstudio.models.mipnerf import MipNerfModel
 from nerfstudio.models.nerfacto import NerfactoModelConfig
 from nerfstudio.models.semantic_nerfw import SemanticNerfWModelConfig
 from nerfstudio.models.tensorf import TensoRFModelConfig
+from nerfstudio.models.tree_mlp import TreeMLPModelConfig
 from nerfstudio.models.vanilla_nerf import NeRFModel, VanillaModelConfig
 from nerfstudio.pipelines.base_pipeline import VanillaPipelineConfig
 from nerfstudio.pipelines.dynamic_batch import DynamicBatchPipelineConfig
@@ -179,15 +180,15 @@ method_configs["instant-ngp-bounded"] = TrainerConfig(
     vis="viewer",
 )
 
-method_configs["treemlp"] = TrainerConfig(
-    method_name="treemlp",
+method_configs["tree_mlp"] = TrainerConfig(
+    method_name="tree_mlp",
     steps_per_eval_batch=500,
     steps_per_save=2000,
     max_num_iterations=30000,
     mixed_precision=True,
     pipeline=DynamicBatchPipelineConfig(
         datamanager=VanillaDataManagerConfig(dataparser=NerfstudioDataParserConfig(), train_num_rays_per_batch=8192),
-        model=InstantNGPModelConfig(eval_num_rays_per_chunk=8192),
+        model=TreeMLPModelConfig(eval_num_rays_per_chunk=8192),
     ),
     optimizers={
         "fields": {

@@ -21,15 +21,18 @@ from typing import Optional
 
 import torch
 from nerfacc import ContractionType, contract
+from torch import nn
 from torch.nn.parameter import Parameter
 from torchtyping import TensorType
 
 from nerfstudio.cameras.rays import RaySamples
 from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.field_components.activations import trunc_exp
+from nerfstudio.field_components.batch_mlp import BatchMLP
 from nerfstudio.field_components.embedding import Embedding
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.fields.base_field import Field
+from nerfstudio.fields.instant_ngp_field import TCNNInstantNGPField
 
 try:
     import tinycudann as tcnn
@@ -47,8 +50,8 @@ def get_normalized_directions(directions: TensorType["bs":..., 3]):
     return (directions + 1.0) / 2.0
 
 
-class TCNNInstantNGPField(Field):
-    """TCNN implementation of the Instant-NGP field.
+class TreeMLPField(TCNNInstantNGPField):
+    """Implementation of the TreeMLP field.
 
     Args:
         aabb: parameters of scene aabb bounds
@@ -78,13 +81,18 @@ class TCNNInstantNGPField(Field):
         appearance_embedding_dim: int = 32,
         contraction_type: ContractionType = ContractionType.UN_BOUNDED_SPHERE,
         num_levels: int = 16,
+        n_features_per_level: int = 2,
         log2_hashmap_size: int = 19,
+        per_level_scale: float = 1.4472692012786865,
+        use_tree_mlp: bool = True,
     ) -> None:
-        super().__init__()
+        super(TCNNInstantNGPField, self).__init__()
 
         self.aabb = Parameter(aabb, requires_grad=False)
         self.geo_feat_dim = geo_feat_dim
         self.contraction_type = contraction_type
+        self.num_levels = num_levels
+        self.use_tree_mlp = use_tree_mlp
 
         self.use_appearance_embedding = use_appearance_embedding
         if use_appearance_embedding:
@@ -93,7 +101,41 @@ class TCNNInstantNGPField(Field):
             self.appearance_embedding = Embedding(num_images, appearance_embedding_dim)
 
         # TODO: set this properly based on the aabb
-        per_level_scale = 1.4472692012786865
+
+        self.grid_encoding = tcnn.Encoding(
+            n_input_dims=3,
+            encoding_config={
+                "otype": "HashGrid",
+                "n_levels": num_levels,
+                "n_features_per_level": n_features_per_level,
+                "log2_hashmap_size": log2_hashmap_size,
+                "base_resolution": 16,
+                "per_level_scale": per_level_scale,
+            },
+        )
+
+        if self.use_tree_mlp:
+            self.mlp_base = BatchMLP(
+                in_dim=3,
+                num_layers=self.num_levels,
+                layer_width=hidden_dim,
+                out_dim=1 + self.geo_feat_dim,
+                skip_connections=None,
+                residual_connections=tuple(range(1, self.num_levels - 1)),
+                out_activation=nn.Sigmoid(),
+            )
+        else:
+            self.mlp_base = tcnn.Network(
+                n_input_dims=n_features_per_level * num_levels,
+                n_output_dims=1 + self.geo_feat_dim,
+                network_config={
+                    "otype": "FullyFusedMLP",
+                    "activation": "ReLU",
+                    "output_activation": "None",
+                    "n_neurons": hidden_dim,
+                    "n_hidden_layers": num_layers - 1,
+                },
+            )
 
         self.direction_encoding = tcnn.Encoding(
             n_input_dims=3,
@@ -102,27 +144,6 @@ class TCNNInstantNGPField(Field):
                 "degree": 4,
             },
         )
-
-        self.mlp_base = tcnn.NetworkWithInputEncoding(
-            n_input_dims=3,
-            n_output_dims=1 + self.geo_feat_dim,
-            encoding_config={
-                "otype": "HashGrid",
-                "n_levels": num_levels,
-                "n_features_per_level": 2,
-                "log2_hashmap_size": log2_hashmap_size,
-                "base_resolution": 16,
-                "per_level_scale": per_level_scale,
-            },
-            network_config={
-                "otype": "FullyFusedMLP",
-                "activation": "ReLU",
-                "output_activation": "None",
-                "n_neurons": hidden_dim,
-                "n_hidden_layers": num_layers - 1,
-            },
-        )
-
         in_dim = self.direction_encoding.n_output_dims + self.geo_feat_dim
         if self.use_appearance_embedding:
             in_dim += self.appearance_embedding_dim
@@ -143,8 +164,17 @@ class TCNNInstantNGPField(Field):
         positions_flat = positions.view(-1, 3)
         positions_flat = contract(x=positions_flat, roi=self.aabb, type=self.contraction_type)
 
-        h = self.mlp_base(positions_flat).view(*ray_samples.frustums.shape, -1)
-        density_before_activation, base_mlp_out = torch.split(h, [1, self.geo_feat_dim], dim=-1)
+        g = self.grid_encoding(positions_flat)
+
+        if self.use_tree_mlp:
+            # use the grid encoding as the weight of the MLP
+            w = g.reshape(g.shape[0], self.num_levels, -1).to(positions)
+            f = self.mlp_base(positions_flat, w).view(*ray_samples.frustums.shape, -1)
+        else:
+            # use the grid encoding as the feature of the MLP
+            f = self.mlp_base(g).view(*ray_samples.frustums.shape, -1)
+
+        density_before_activation, base_mlp_out = torch.split(f, [1, self.geo_feat_dim], dim=-1)
 
         # Rectifying the density with an exponential is much more stable than a ReLU or
         # softplus, because it enables high post-activation (float32) density outputs
@@ -177,29 +207,3 @@ class TCNNInstantNGPField(Field):
 
         rgb = self.mlp_head(h).view(*ray_samples.frustums.directions.shape[:-1], -1).to(directions)
         return {FieldHeadNames.RGB: rgb}
-
-    def get_opacity(self, positions: TensorType["bs":..., 3], step_size) -> TensorType["bs":..., 1]:
-        """Returns the opacity for a position. Used primarily by the occupancy grid.
-
-        Args:
-            positions: the positions to evaluate the opacity at.
-            step_size: the step size to use for the opacity evaluation.
-        """
-        density = self.density_fn(positions)
-        ## TODO: We should scale step size based on the distortion. Currently it uses too much memory.
-        # aabb_min, aabb_max = self.aabb[0], self.aabb[1]
-        # if self.contraction_type is not ContractionType.AABB:
-        #     x = (positions - aabb_min) / (aabb_max - aabb_min)
-        #     x = x * 2 - 1  # aabb is at [-1, 1]
-        #     mag = x.norm(dim=-1, keepdim=True)
-        #     mask = mag.squeeze(-1) > 1
-
-        #     dev = (2 * mag - 1) / mag**2 + 2 * x**2 * (1 / mag**3 - (2 * mag - 1) / mag**4)
-        #     dev[~mask] = 1.0
-        #     dev = torch.clamp(dev, min=1e-6)
-        #     step_size = step_size / dev.norm(dim=-1, keepdim=True)
-        # else:
-        #     step_size = step_size * (aabb_max - aabb_min)
-
-        opacity = density * step_size
-        return opacity
