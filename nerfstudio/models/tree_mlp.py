@@ -62,6 +62,8 @@ class TreeMLPModelConfig(InstantNGPModelConfig):
     geo_feat_dim: int = 15
     num_levels: int = 16
     n_features_per_level: int = 2
+    log2_hashmap_size: int = 19
+    base_resolution: int = 16
     per_level_scale: float = 1.4472692012786865
 
 
@@ -91,6 +93,8 @@ class TreeMLPModel(NGPModel):
             num_images=self.num_train_data,
             num_levels=self.config.num_levels,
             n_features_per_level=self.config.n_features_per_level,
+            log2_hashmap_size=self.config.log2_hashmap_size,
+            base_resolution=self.config.base_resolution,
             per_level_scale=self.config.per_level_scale,
         )
 

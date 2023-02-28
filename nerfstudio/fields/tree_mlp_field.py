@@ -31,6 +31,7 @@ from nerfstudio.field_components.activations import trunc_exp
 from nerfstudio.field_components.batch_mlp import BatchMLP
 from nerfstudio.field_components.embedding import Embedding
 from nerfstudio.field_components.field_heads import FieldHeadNames
+from nerfstudio.field_components.mlp import MLP
 from nerfstudio.fields.base_field import Field
 from nerfstudio.fields.instant_ngp_field import TCNNInstantNGPField
 
@@ -83,6 +84,7 @@ class TreeMLPField(TCNNInstantNGPField):
         num_levels: int = 16,
         n_features_per_level: int = 2,
         log2_hashmap_size: int = 19,
+        base_resolution: int = 16,
         per_level_scale: float = 1.4472692012786865,
         use_tree_mlp: bool = True,
     ) -> None:
@@ -100,8 +102,6 @@ class TreeMLPField(TCNNInstantNGPField):
             self.appearance_embedding_dim = appearance_embedding_dim
             self.appearance_embedding = Embedding(num_images, appearance_embedding_dim)
 
-        # TODO: set this properly based on the aabb
-
         self.grid_encoding = tcnn.Encoding(
             n_input_dims=3,
             encoding_config={
@@ -109,8 +109,9 @@ class TreeMLPField(TCNNInstantNGPField):
                 "n_levels": num_levels,
                 "n_features_per_level": n_features_per_level,
                 "log2_hashmap_size": log2_hashmap_size,
-                "base_resolution": 16,
+                "base_resolution": base_resolution,
                 "per_level_scale": per_level_scale,
+                "interpolation": "Nearest",  # "Nearest", "Linear", or "Smoothstep"
             },
         )
 
@@ -147,16 +148,24 @@ class TreeMLPField(TCNNInstantNGPField):
         in_dim = self.direction_encoding.n_output_dims + self.geo_feat_dim
         if self.use_appearance_embedding:
             in_dim += self.appearance_embedding_dim
-        self.mlp_head = tcnn.Network(
-            n_input_dims=in_dim,
-            n_output_dims=3,
-            network_config={
-                "otype": "FullyFusedMLP",
-                "activation": "ReLU",
-                "output_activation": "Sigmoid",
-                "n_neurons": hidden_dim_color,
-                "n_hidden_layers": num_layers_color - 1,
-            },
+        # self.mlp_head = tcnn.Network(
+        #     n_input_dims=in_dim,
+        #     n_output_dims=3,
+        #     network_config={
+        #         "otype": "FullyFusedMLP",
+        #         "activation": "ReLU",
+        #         "output_activation": "Sigmoid",
+        #         "n_neurons": hidden_dim_color,
+        #         "n_hidden_layers": num_layers_color - 1,
+        #     },
+        # )
+        self.mlp_head = MLP(
+            in_dim=in_dim,
+            num_layers=num_layers_color,
+            layer_width=hidden_dim_color,
+            out_dim=3,
+            activation=nn.ReLU(),
+            out_activation=nn.Sigmoid(),
         )
 
     def get_density(self, ray_samples: RaySamples):

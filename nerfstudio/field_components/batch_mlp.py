@@ -123,7 +123,7 @@ class BatchMLP(FieldComponent):
 
 
 class BatchLinear(torch.nn.Module):
-    def __init__(self, in_dim: int, out_dim: int, bias: bool = True) -> None:
+    def __init__(self, in_dim: int, out_dim: int, bias: bool = False) -> None:
         super().__init__()
         self.in_dim = in_dim
         self.out_dim = out_dim
@@ -134,7 +134,7 @@ class BatchLinear(torch.nn.Module):
 
     def forward(self, input: Tensor, weight: Tensor) -> Tensor:
         num_param_w = self.in_dim * self.out_dim
-        assert weight.shape[1] >= num_param_w
+        assert weight.shape[1] >= num_param_w, f"weight.shape[1]: {weight.shape[1]}, num_param_w: {num_param_w})"
         w = weight[:, :num_param_w].reshape(weight.shape[0], self.out_dim, self.in_dim)
         if self.bias:
             assert weight.shape[1] >= num_param_w + self.out_dim

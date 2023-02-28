@@ -188,7 +188,7 @@ method_configs["tree_mlp"] = TrainerConfig(
     mixed_precision=True,
     pipeline=DynamicBatchPipelineConfig(
         datamanager=VanillaDataManagerConfig(dataparser=NerfstudioDataParserConfig(), train_num_rays_per_batch=8192),
-        model=TreeMLPModelConfig(eval_num_rays_per_chunk=8192),
+        model=TreeMLPModelConfig(eval_num_rays_per_chunk=4096),
     ),
     optimizers={
         "fields": {
